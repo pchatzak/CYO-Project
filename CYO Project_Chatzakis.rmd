@@ -1,0 +1,277 @@
+---
+title: "Choose Your Own Project: Analysis of Banking Indicators"
+author: "Panagiotis Chatzakis"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+subtitle: Towards Detecting Warning Signs in the Wider Banking System
+geometry: margin=1in
+---
+
+# Introduction
+
+This is the second project of the HarvardX Data Science Certificate. In this project, the Principal Component Analysis (PCA) method is applied on economy-wide macrofinancial indicators to identify potential sector-wide linkages between these variables.
+
+The purpose of this project is to analyze data from a banking system's portfolio or costs in order to identify latent factors that will be used to forecast deterioration, using measurements such as: nonperforming loans (NPL) ratio, cost of funds (relative to the interbank offered rate or the overnight policy rate), and the credit default swap (CDS) spreads.
+The goal is to identify a cluster of indicators with potential predictive power to forecast deterioration in a banking system, developed to detect potential warning signs in the wider banking system.
+
+# Methodology
+
+The main method used here is the Principal Component Analysis (PCA). PCA is an unsupervised, non-parametric statistical technique primarily used for dimensionality reduction in machine learning, by transforming a large set of variables into a smaller one that still contains most of the information in the large set. Reducing the number of components or features costs some accuracy and on the other hand, it makes the large data set simpler, easy to explore and visualize. Also, it reduces the computational complexity of the model which makes machine learning algorithms run faster. 
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+library(missMDA)
+library(FactoMineR)
+library(ggfortify)
+library(cluster)
+library(knitr)
+library(ggplot2)
+library(ggthemes)
+library(RColorBrewer)
+library(readxl)
+```
+
+# Data Exploration
+
+## Data Transformation
+
+The dataset used in this project was sourced from http://www.bnm.gov.my/index.php?ch=statistic
+and was transformed to produce the following variables:
+
+* Ratios to total deposits:
+    + Demand deposits ratio (`dd.deposits.r`)
+    + Foreign currency deposits ratio (`fx.deposits.r`)
+    + Repurchase agreements ratio (`repo.deposits.r`)
+* Ratios to total loan applied:
+    + Passenger car loan application ratio (`loan.app.cars.r`)
+    + Construction loan application ratio (`loan.app.construction.r`)
+    + Non-residential property loan application ratio (`loan.app.nonresprop.r`)
+    + Residential property loan application ratio (`loan.app.resprop.r`)
+    + Working capital loan application ratio (`loan.app.workingcapital.r`)
+* Total loans applied growth rate (`loan.yy`)
+* Liquidity capital ratio (`lcr`)
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.keep='none'}
+indicators.raw <- read_excel("/Users/Gast/Desktop/Dataset/Transformed Data.xlsx", sheet = "Transformed Data")
+indicators <- data.frame(indicators.raw)
+indicators.raw$MonthYr <- format(as.Date(indicators.raw$Month), "%Y-%m")  # Obtain year-month format
+indicators.raw$Month <- as.Date(indicators.raw$Month)  # Convert "Month" from character class to date class
+raw.summary.stats <- data.frame(Minimum = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, min),
+                                Maximum = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, max),
+                                Mean = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, mean),
+                                Median = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, median),
+                                StDev = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, sd),
+                                Count = apply(na.omit(indicators.raw[, c(2:10, 12:15)]), 2, length))
+```
+
+## Data Balancing
+
+The dataset is "unbalanced" due to the different starting points to which the data was first reported. For example, there are clusters of variables with different number of observations; `npl.r`, which has data as far back as January 1997, has 270 observations, whereas `lcr`, which BNM only began reporting in June 2015, only has 40 recorded observations. For this reason, the dataset had to be balanced. That means to equalize the amount of entries for each variable, by imputing missing values using regularized iterative PCA algorithm.
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.keep='none'}
+# Impute missing values using regularized iterative PCA algorithm
+indicators.imputed.adj <- imputePCA(indicators[-21, c(2:10, 12:15)],
+                                    ncp = 5, scale = TRUE,
+                                    method = "Regularized")
+
+# Impute missing values for dataset including npl.r
+indicators.imputed.nplr <- imputePCA(indicators[-21, 2:15],
+                                    ncp = 10, scale = TRUE,
+                                    method = "Regularized")
+pca.ews <- PCA(indicators.imputed.adj$completeObs)
+
+# In-built R PCA procedure
+pca.ews.R <- prcomp(indicators.imputed.adj$completeObs, scale. = TRUE)
+
+# ews.pca.adj$sdev^2  # Eigenvalues row vector
+indicators.pca.ews <- data.frame(cbind(indicators.imputed.adj$completeObs, pca.ews.R$x[, 1:3]))
+indicators.pca.ews.econyy <- data.frame(cbind(indicators.pca.ews, indicators.imputed.nplr$completeObs[, 10], indicators$econ.yy[-21]))
+colnames(indicators.pca.ews.econyy)[17] = "npl.r"
+colnames(indicators.pca.ews.econyy)[18] = "econ.yy"
+
+# Summary statistics (to compare with line 21)
+imputed.summary.stats <- data.frame(Minimum = apply(indicators.pca.ews[, 1:13], 2, min),
+                                    Maximum = apply(indicators.pca.ews[, 1:13], 2, max),
+                                    Mean = apply(indicators.pca.ews[, 1:13], 2, mean),
+                                    Median = apply(indicators.pca.ews[, 1:13], 2, median),
+                                    StDev = apply(indicators.pca.ews[, 1:13], 2, sd), 
+                                    Count = apply(indicators.pca.ews[, 1:13], 2, length))
+```
+
+If PCA was done on the raw dataset, the size of dataset included in the analysis will be constrained to the size of the variable with the least amount of entries and the entries which all variables concurrently recorded an observation. To illustrate this, the following is a graph of the available nonperforming loans (NPL) ratio data (which the bank only began reporting in December 2008), which has recorded observations less than half of the variable with the longest reporting time frame in the dataset:
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.keep='all', fig.align='center', fig.height=4, fig.cap="NPL ratio, as sourced"}
+ggplot(indicators.raw, aes(Month, npl.r)) +
+  scale_x_date(date_labels = "%b-%Y") +
+  geom_line(size=0.8, color = "navy") +
+  geom_point(size=0.7) +
+  xlab("Date") +
+  ylab("NPL Ratio") +
+  scale_x_date(breaks = "24 months", date_labels = "%b %y") +
+  theme_light()
+```
+
+\newpage
+
+For this reason, the regularized iterative PCA algorithm was used for this project, in order to impute the missing values using existing principal axes and components in the dataset whilst simultaneously overcoming the issue of overfitting.
+The R Package `missMDA` is used to perform principal component methods on incomplete data, aiming at estimating parameters and obtaining graphical representations despite mising values. Using these algorithms yields the following graph of imputed nonperforming loans (NPL) ratio for entries before December 2008 and maintaining the original values December 2008 onwards:
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE,warning=FALSE, message=FALSE, fig.keep='all', fig.align='center', fig.height=4, fig.cap="NPL ratio with imputed values for observations before December 2008"}
+ggplot(indicators.pca.ews.econyy, aes(indicators.raw$Month[-21], npl.r)) +
+  scale_x_date(date_labels = "%b-%Y") +
+  geom_line(size=0.8,color = "navy") +
+  geom_point(size=0.7) +
+  xlab("Date") +
+  ylab("NPL Ratio") +
+  scale_x_date(breaks = "24 months", date_labels = "%b %y") +
+  theme_light()
+```
+
+However, the imputed values affect the inter-variable relationships, by either strengthening existing correlations in the original dataset. The following figures illustrate that, whilst the full summary statistics of the datasets before and after the transformation are presented just before the results.
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.keep='all', fig.align='center', fig.cap="Relationship between loan application ratios in the raw dataset"}
+pairs(na.omit(indicators.raw[, 5:10]), panel = panel.smooth)
+```
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.keep='all', fig.align='center', fig.cap="Relationship between loan application ratios in the imputed dataset"}
+pairs(indicators.pca.ews.econyy[, 4:9], panel = panel.smooth)
+```
+
+\newpage
+
+#  Analysis
+
+## Principal Component Analysis (PCA)
+
+### Eigendecomposition -- eigenvalues
+
+The goal of PCA is to reduce the dimensionality, meaning to reduce the number of variables, while retaining as much as possible of the variation present in the data.
+
+When running the PCA on the new transformed dataset with imputed and original values, the analysis yields eigenvalues, i.e. a vector of values that provide information about the amount of variability captured by each principal component (PC). Principal components are new variables that are constructed as linear combinations or mixtures of the initial variables. Each eigenvalue covers a proportion of variation that exists in the dataset.
+
+We explore through the following table and histogram the eigenvalues of each PC (listed as "comp") from the PCA. 
+
+```{r, eval=TRUE, tidy=TRUE,echo=FALSE, warning=FALSE}
+kable(round(pca.ews$eig, digits = 4), caption = "Table of eigenvalues")
+```
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, fig.keep='all', fig.align='center', fig.height=4, fig.cap="Screenplot of eigenvalues"}
+barplot(pca.ews$eig[, "eigenvalue"],
+        border = TRUE, col = "blue", ylim = c(0, 5), las = 2,
+        ylab = "Eigenvalue",
+        names.arg = rownames(pca.ews$eig))
+```
+
+The main challenge is to determine the number of dimensions to reduce, since there is not a general rule to determine that. A useful metric to decide which PCs to retain is the amount of variance each PC covers.From the above table, the percentage of variance captured by the first two dimensions covers over half (57.6%) of the entire variation in the dataset. 
+ 
+The percentage variance captured by the first three dimensions covers about two-thirds of the entire variation in the dataset (67.2%). Hence, the first two PCs will be given the most focus, while the third PC is included intermittently for comparative and illustrative purposes.
+
+\newpage
+
+## Evaluation of the correlations between variables and principal components
+
+To find out how each PC is characterized, we evaluate the correlations between the variables and the PCs as below. PCs are listed in the following table as "Dim")
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE}
+kable(round(pca.ews$var$coord[, 1:2], digits = 4), caption = "Correlation between variables and PCs")
+```
+
+\newpage
+
+To further understand the correlation between them we plot the circle of correlations.
+
+```{r, eval=TRUE, tidy=TRUE,echo=FALSE, warning=FALSE, fig.keep='all', fig.align='center', fig.height=4, fig.cap="Variables factor map"}
+plot(pca.ews, choix = "var")
+```
+
+The closer an arrow is to the circumference of the circle, the better its representation on the given axes. For example, if we take the residential property loan applications ratio (`loan.app.resprop.r`), we can notice that PC1 has a strong positive correlation with `loan.app.resprop.r` whilst registering an insignificant, negative correlation with PC2.
+
+## Contribution of each variable to each principal component
+
+Furthermore, we evaluate how variables characterize each PCs by examining the contributions of each variable to each principal component. The following table illustrates the proportion of each variable that make up a single principal component:
+
+```{r , eval=TRUE, tidy=TRUE,echo=FALSE, warning=FALSE}
+kable(round(rbind(pca.ews$var$contrib, TOTAL = colSums(pca.ews$var$contrib)), digit = 4), caption = "Contributions of variables on each principal component")
+```
+
+The regularised iterative PCA algorithm transforms the original workable dataset from the Table 4 to Table 5 (note the number of observations for each variable under the column "Count"):
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE}
+kable(round(raw.summary.stats, digits = 4), caption = "Before transformation")
+kable(round(imputed.summary.stats, digits = 4), caption = "After transformation")
+```
+
+Focusing on the first three principal components, the contribution for each variable is plotted in the following figures:
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, fig.keep='all', fig.align='center', fig.cap="Influence of each macrofinancial indicator on PC1"}
+ggplot(as.data.frame(pca.ews$var$contrib), aes(x = row.names(as.data.frame(pca.ews$var$contrib)), y = Dim.1)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "dodgerblue2") +
+  geom_text(aes(label = round(pca.ews$var$contrib[, 1], digits = 2), vjust = -0.3)) +
+  labs(subtitle = "Note: Overall percentage of variance captured by PC1 is 31.03%") +
+  xlab("Macrofinancial Indicators") +
+  ylab("% contribution to PC1") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.background = element_rect(fill = "gray95", colour = "gray70"),
+        panel.grid.major = element_line(colour = "gray90", size = rel(0.5)),
+        panel.grid.minor = element_line(colour = "gray90", size = rel(0.25)))
+```
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, fig.keep='all', fig.align='center', fig.cap="Influence of each macrofinancial indicator on PC2"}
+ggplot(as.data.frame(pca.ews$var$contrib), aes(x = row.names(as.data.frame(pca.ews$var$contrib)), y = Dim.2)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "dodgerblue2") +
+  geom_text(aes(label = round(pca.ews$var$contrib[, 2], digits = 2), vjust = -0.3)) +
+  labs(subtitle = "Note: Overall percentage of variance captured by PC2 is 26.54%") +
+  xlab("Macrofinancial Indicators") +
+  ylab("% contribution to PC2") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.background = element_rect(fill = "gray95", colour = "gray70"),
+        panel.grid.major = element_line(colour = "gray90", size = rel(0.5)),
+        panel.grid.minor = element_line(colour = "gray90", size = rel(0.25)))
+```
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, tidy=TRUE, fig.keep='all', fig.align='center', fig.cap="Influence of each macrofinancial indicator on PC3"}
+ggplot(as.data.frame(pca.ews$var$contrib), aes(x = row.names(as.data.frame(pca.ews$var$contrib)), y = Dim.3)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "dodgerblue2") +
+  geom_text(aes(label = round(pca.ews$var$contrib[, 3], digits = 2), vjust = -0.3)) +
+  labs(subtitle = "Note: Overall percentage of variance captured by PC3 is 9.66%") +
+  xlab("Macrofinancial Indicators") +
+  ylab("% contribution to PC3") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.background = element_rect(fill = "gray95", colour = "gray70"),
+        panel.grid.major = element_line(colour = "gray90", size = rel(0.5)),
+        panel.grid.minor = element_line(colour = "gray90", size = rel(0.25)))
+```
+
+# Results
+
+## Plotting principal component scores
+
+We use the principal component scores derived from each observation as coordinates to plot the objects in a scatterplot. Also a colour gradient is applied to each PC score to visualize the impact of moving towards certain regions in the PC1-PC2 plot on NPL ratios. 
+
+```{r, eval=TRUE, tidy=TRUE, echo=FALSE, warning=FALSE, fig.keep='all', fig.align='center', fig.cap="Scatterplot of PC scores on first two PC axes, applied colour gradient to each point to scale NPL ratio"}
+ggplot(indicators.pca.ews.econyy, aes(PC1, PC2, PC3, color = npl.r)) +
+  geom_hline(yintercept = 0, color = "gray60") +
+  geom_vline(xintercept = 0, color = "gray60") +
+  geom_point() +
+  scale_colour_gradient(low = "lightsteelblue", high = "darkblue") +
+  labs(title = "Early Warning System PCA plot of observations", subtitle = "with percentage of variance in parentheses") +
+  xlab("PC1 (31.03%)") +  # The corresponding percentage of variance for PC1
+  ylab("PC2 (26.54%)") +  # The corresponding percentage of variance for PC2
+  labs(color = "NPL Ratio", size = "NPL Ratio") +
+  theme_light()
+```
+
+It can be observed that moving into the negative region of PC1 generally implies higher nonperforming loans (NPL) ratios. This gives the PC1 axis a strong predictive power on the general outlook of banks' loan portfolio performance.
+
+# Conclusion
+
+In this project, a regularized imputed PCA algorithm to impute missing values in historical datasets has been carried out. The new transformed and uniform dataset was used for a second order PCA to extract the factors and sensitivities that drives the performance of the analyzed banking system stemming from the performance of various macrofinancial indicators. 
+
+This project shows how extremely complex, dynamic and interlinked is the banking sector. Furthermore, it is shown how small gyrations in this sector can potentially impact the wider economy and vice versa and how this cluster of indicators can be used to detect potential warning signs in the wider banking system. In other words, we obtained a better understanding on how a cluster of factors can contribute to the overall macro effect, not simply through their individual mechanical effects, but also through their inter-linked micro effects.
+
+The basic limitation of the PCA method is that is focused on finding orthogonal projections of the dataset that contains the highest variance possible in order to 'find hidden LINEAR correlations' between variables of the dataset. This means that if you have some of the variables in your dataset that are linearly correlated, PCA can find directions that represents your data. But if the data is not linearly correlated, then PCA would not be enough:
+
+Another limitation could be the careless selection of the number of Principal Components. Although Principal Components try to cover maximum variance among the features in a dataset, if we don’t select the number of Principal Components with care, it may miss some information as compared to the original list of features.
+
+As future work towards enhancing the impact of this project, it could be the analysis of the wider banking system on country level, or it could also be applied on continental level. A bank should always be examined combined with the country´s financial dynamic and perspective, in order to acquire a realistic predictive power for its indicators. 
+
+
