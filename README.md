@@ -1,5 +1,5 @@
 # CYO-Project:
-The files in this repository are the output of the CYO Capstone project for the ´Data Science Professional Certificate Program´. This repository contains the following files:
+The files in this repository are the output of the CYO Capstone project for the Data Science Professional Certificate Program. This repository contains the following files:
 
 1. README.md: *This file explaining the repository´s content.*   
 
