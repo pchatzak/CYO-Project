@@ -1,7 +1,7 @@
 # CYO-Project:
 The files in this repository are the output of the CYO Capstone project for the Data Science Professional Certificate Program. This repository contains the following files:
 
-1. README.md: *This file explaining the repository´s content.   
+1. README.md: *This file explaining the repository´s content.*   
 
 2. CYO Project_Chatzakis.pdf: *The report of the CYO project in **pdf** format (knit from the Rmd file) containing introduction, methodology, data exploration, analysis, results and conclusion.  
 
